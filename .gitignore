@@ -1,0 +1,21 @@
+# 构建产物
+obj/
+dist/
+*.obj
+*.res
+*.exe
+*.pdb
+*.ilk
+
+# 配置（含用户自己的快捷键设置）
+AutoTyper.ini
+
+# 测试产物
+*.out
+*.out.txt
+*.log
+
+# 编辑器
+.vs/
+.vscode/
+*.user

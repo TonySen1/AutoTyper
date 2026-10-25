@@ -1,0 +1,10 @@
+# 统一换行，避免跨平台 diff 噪音
+* text=auto
+
+# 批处理需要 CRLF
+*.bat text eol=crlf
+
+# 二进制
+*.ico binary
+*.png binary
+*.exe binary
