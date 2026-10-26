@@ -24,6 +24,9 @@
 #include <vector>
 #include <cstdio>
 
+#include "textfmt.h"
+#include "typing.h"
+
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -44,6 +47,7 @@
 #define IDC_STATUS        1013
 #define IDC_BTN_SETTINGS  1014
 #define IDC_REPO          1016
+#define IDC_CHK_HUMANIZE  1017
 
 // 设置窗口内控件
 #define IDC_LBL_START     2001
@@ -137,146 +141,19 @@ static bool ParseHotkey(const std::wstring& text, Hotkey& out);
 
 
 // ============================================================
-//  文本编解码
+//  文本编解码：实现在 textfmt.cpp，行为与 v1.0.0 一致
 // ============================================================
-static bool DecodeBytes(const std::string& raw, std::wstring& out)
-{
-    const unsigned char* p = (const unsigned char*)raw.data();
-    size_t n = raw.size();
-
-    if (n >= 2 && p[0] == 0xFF && p[1] == 0xFE) {          // UTF-16 LE BOM
-        size_t cnt = (n - 2) / sizeof(wchar_t);
-        out.assign((const wchar_t*)(p + 2), cnt);
-        return true;
-    }
-    if (n >= 2 && p[0] == 0xFE && p[1] == 0xFF) {          // UTF-16 BE BOM
-        size_t cnt = (n - 2) / 2;
-        out.clear();
-        out.reserve(cnt);
-        for (size_t i = 0; i < cnt; ++i) {
-            unsigned short v = (unsigned short)((p[2 + i * 2] << 8) | p[3 + i * 2]);
-            out.push_back((wchar_t)v);
-        }
-        return true;
-    }
-
-    size_t off = 0;
-    if (n >= 3 && p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) off = 3;
-
-    if (n == off) { out.clear(); return true; }
-
-    int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                   raw.data() + off, (int)(n - off), nullptr, 0);
-    if (need > 0) {
-        out.resize((size_t)need);
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                            raw.data() + off, (int)(n - off), &out[0], need);
-        return true;
-    }
-
-    need = MultiByteToWideChar(CP_ACP, 0, raw.data() + off, (int)(n - off), nullptr, 0);
-    if (need <= 0) return false;
-    out.resize((size_t)need);
-    MultiByteToWideChar(CP_ACP, 0, raw.data() + off, (int)(n - off), &out[0], need);
-    return true;
-}
-
-static bool ReadTextFile(const std::wstring& path, std::wstring& out)
-{
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-
-    LARGE_INTEGER sz{};
-    if (!GetFileSizeEx(h, &sz) || sz.QuadPart > (64LL << 20)) { CloseHandle(h); return false; }
-
-    std::string buf((size_t)sz.QuadPart, '\0');
-    DWORD got = 0;
-    BOOL ok = buf.empty() ? TRUE : ReadFile(h, &buf[0], (DWORD)buf.size(), &got, nullptr);
-    CloseHandle(h);
-    if (!ok) return false;
-    buf.resize(got);
-    return DecodeBytes(buf, out);
-}
+using at::ReadTextFile;
 
 // ============================================================
-//  键鼠注入
+//  键鼠注入：实现在 typing.cpp
 // ============================================================
-static bool SendUnicodeChar(wchar_t ch)
+static at::TypingOptions g_typeOpts;
+
+static at::TypingReport TypingWorker(const std::wstring& text,
+                                     const at::TypingOptions& opts)
 {
-    INPUT in[2];
-    ZeroMemory(in, sizeof(in));
-    in[0].type = INPUT_KEYBOARD;
-    in[0].ki.wVk = 0;
-    in[0].ki.wScan = ch;
-    in[0].ki.dwFlags = KEYEVENTF_UNICODE;
-    in[1] = in[0];
-    in[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-    return SendInput(2, in, sizeof(INPUT)) == 2;
-}
-
-static bool SendVkKey(WORD vk)
-{
-    INPUT in[2];
-    ZeroMemory(in, sizeof(in));
-    in[0].type = INPUT_KEYBOARD;
-    in[0].ki.wVk = vk;
-    in[1] = in[0];
-    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    return SendInput(2, in, sizeof(INPUT)) == 2;
-}
-
-static void ForceEnglishLayout(HWND target)
-{
-    if (!target) return;
-    HKL hkl = LoadKeyboardLayoutW(L"00000409", KLF_ACTIVATE);
-    if (!hkl) return;
-    PostMessageW(target, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)hkl);
-    Sleep(60);
-}
-
-static DWORD TypingWorker(const std::wstring& text, int delayMs, bool forceEnglish)
-{
-    if (forceEnglish) {
-        HWND fg = GetForegroundWindow();
-        if (fg) ForceEnglishLayout(fg);
-    }
-
-    DWORD blocked = 0;
-    int fails = 0;
-
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (g_stop.load(std::memory_order_relaxed)) break;
-
-        wchar_t ch = text[i];
-        bool ok = true;
-
-        if (ch == L'\r') {
-            if (i + 1 < text.size() && text[i + 1] == L'\n') continue;
-            ok = SendVkKey(VK_RETURN);
-        } else if (ch == L'\n') {
-            ok = SendVkKey(VK_RETURN);
-        } else if (ch == L'\t') {
-            ok = SendVkKey(VK_TAB);
-        } else {
-            ok = SendUnicodeChar(ch);
-        }
-
-        if (!ok) {
-            if (++fails >= 5) blocked = 1;
-        } else {
-            fails = 0;
-        }
-
-        int left = delayMs;
-        while (left > 0) {
-            if (g_stop.load(std::memory_order_relaxed)) break;
-            int slice = left > 8 ? 8 : left;
-            Sleep(slice);
-            left -= slice;
-        }
-    }
-    return blocked;
+    return at::TypeText(text, opts, &g_stop);
 }
 
 // ============================================================
@@ -396,9 +273,30 @@ static const Palette kDark = {
     RGB(240, 242, 245),   // countText
 };
 
-// 单一配色（深色玻璃），不再提供主题切换
-static const bool g_dark = true;
-static Palette    g_pal = kDark;
+static const Palette kLight = {
+    RGB(246, 247, 249),   // bg          浅灰白，避免纯白刺眼
+    RGB(238, 240, 244),   // panel
+    RGB( 32,  35,  40),   // text
+    RGB(110, 116, 125),   // textDim
+    RGB(255, 255, 255),   // editBg
+    RGB( 28,  31,  36),   // editText
+    RGB(252, 252, 253),   // btnBg
+    RGB( 40,  44,  50),   // btnText
+    RGB(240, 242, 246),   // btnHot
+    RGB(228, 231, 237),   // btnDown
+    RGB( 34, 145,  74),   // accent
+    RGB( 48, 164,  92),   // accentHot
+    RGB(255, 255, 255),   // accentText
+    RGB(198,  62,  58),   // danger
+    RGB(216,  80,  76),   // dangerHot
+    RGB(206, 210, 218),   // border
+    RGB(252, 252, 253),   // countBg
+    RGB( 32,  35,  40),   // countText
+};
+
+// 当前使用浅色主题；保留 kDark 以便后续加回切换
+static const bool g_dark = false;
+static Palette    g_pal = kLight;
 
 // 自绘资源
 static HBRUSH g_brBg = nullptr;
@@ -463,6 +361,8 @@ struct WinCompositionAttrData {
 
 static bool g_acrylicSupported = false;
 static bool g_acrylicEnabled = false;
+// 因主题选择而主动关闭（区别于"系统不支持"）
+static bool g_acrylicThemeOff = false;
 
 typedef BOOL (WINAPI *PFN_SetWindowCompositionAttribute)(HWND, WinCompositionAttrData*);
 
@@ -493,6 +393,18 @@ static void EnableAcrylic(HWND hWnd, bool on)
 {
     if (!hWnd) return;
 
+    g_acrylicThemeOff = false;
+
+    // 白色主题不启用 DWM 客户区合成。
+    // 实测：浅色 gradientColor 下 ACCENT_ENABLE_ACRYLICBLUR 会把整块客户区
+    // 合成成纯白，子控件虽然 Visible 却被盖住。纯色背景可预测得多。
+    if (!g_dark) {
+        g_acrylicThemeOff = true;
+        g_acrylicSupported = false;
+        g_acrylicEnabled = false;
+        return;
+    }
+
     PFN_SetWindowCompositionAttribute wca = GetSetWCA();
     if (!wca) { g_acrylicSupported = false; return; }
     g_acrylicSupported = true;
@@ -501,9 +413,9 @@ static void EnableAcrylic(HWND hWnd, bool on)
     if (on) {
         ap.state = ACCENT_ENABLE_ACRYLICBLUR;
         ap.flags = 2;   // 允许绘制到客户区
-        // 深色用较暗的底色，浅色用偏白的底色；alpha 越低越透
+        // 深色用较暗的底色，alpha 越低越透
         BYTE alpha = 0xC0;
-        ap.gradientColor = AcrylicColor(RGB(43, 45, 49), alpha);
+        ap.gradientColor = AcrylicColor(g_pal.bg, alpha);
     } else {
         ap.state = ACCENT_DISABLED;
     }
@@ -559,17 +471,25 @@ static void PaintWindowBackground(HWND hWnd, HDC dc)
     // ① 不透明铺满，这是消除残影的关键
     FillRect(dc, &rc, g_brBg ? g_brBg : (HBRUSH)(COLOR_BTNFACE + 1));
 
-    if (!g_acrylicEnabled) return;
-
-    // ② 顶部 1/3 叠一层极淡的亮色渐变（玻璃受光感）
+    // ② 顶部 1/3 叠一层极淡的渐变
+    //    深色主题提亮做受光感；浅色主题不依赖亚克力也要有层次，故同样绘制
+    if (!g_acrylicEnabled && g_dark) return;
     RECT top = rc;
     top.bottom = rc.top + (rc.bottom - rc.top) / 3;
     if (top.bottom > top.top + 1) {
+        const int delta = g_dark ? 12 : -10;
+        auto shift = [delta](BYTE v) -> COLOR16 {
+            int n = (int)v + delta;
+            if (n < 0) n = 0;
+            if (n > 255) n = 255;
+            return (COLOR16)((BYTE)n << 8);
+        };
+
         TRIVERTEX v[2];
         v[0].x = top.left;  v[0].y = top.top;
-        v[0].Red   = (COLOR16)((GetRValue(g_pal.bg) + 12 > 255 ? 255 : GetRValue(g_pal.bg) + 12) << 8);
-        v[0].Green = (COLOR16)((GetGValue(g_pal.bg) + 12 > 255 ? 255 : GetGValue(g_pal.bg) + 12) << 8);
-        v[0].Blue  = (COLOR16)((GetBValue(g_pal.bg) + 14 > 255 ? 255 : GetBValue(g_pal.bg) + 14) << 8);
+        v[0].Red   = shift(GetRValue(g_pal.bg));
+        v[0].Green = shift(GetGValue(g_pal.bg));
+        v[0].Blue  = shift(GetBValue(g_pal.bg));
         v[0].Alpha = 0;
 
         v[1].x = top.right; v[1].y = top.bottom;
@@ -585,7 +505,7 @@ static void PaintWindowBackground(HWND hWnd, HDC dc)
 
 static void ApplyThemePalette()
 {
-    g_pal = kDark;
+    g_pal = g_dark ? kDark : kLight;
     RebuildBrushes();
 }
 
@@ -616,10 +536,6 @@ static void ApplyDarkTitleBar(HWND hWnd, bool dark)
 static HICON g_icoApp   = nullptr;   // 应用图标（固定 1 号资源）
 static HICON g_icoAppSm = nullptr;   // 应用小图标
 
-// 右下角仓库跳转图标：10=深色版(浅色主题用) 11=白色版(深色主题用)
-static HICON g_icoRepoLight = nullptr;
-static HICON g_icoRepoDark  = nullptr;
-
 static void LoadAppIcons()
 {
     g_icoApp = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(1), IMAGE_ICON,
@@ -627,11 +543,6 @@ static void LoadAppIcons()
     g_icoAppSm = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(1), IMAGE_ICON,
                                    GetSystemMetrics(SM_CXSMICON),
                                    GetSystemMetrics(SM_CYSMICON), 0);
-
-    g_icoRepoLight = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(10), IMAGE_ICON,
-                                       0, 0, LR_DEFAULTSIZE);
-    g_icoRepoDark  = (HICON)LoadImageW(g_hInst, MAKEINTRESOURCEW(11), IMAGE_ICON,
-                                       0, 0, LR_DEFAULTSIZE);
 }
 
 // 应用图标与主题无关，固定使用 1 号资源
@@ -796,6 +707,39 @@ static void LoadConfig()
 
     GetPrivateProfileStringW(L"hotkey", L"stop", L"F10", buf, 128, path.c_str());
     if (ParseHotkey(buf, hk)) g_hkStop = hk;
+
+    // [typing] 段：全部可选，缺省即 v1.0.0 行为
+    auto rdInt = [&](const wchar_t* key, int def, int lo, int hi) -> int {
+        GetPrivateProfileStringW(L"typing", key, L"", buf, 128, path.c_str());
+        if (!buf[0]) return def;
+        int v = (int)wcstol(buf, nullptr, 10);
+        return v < lo ? lo : (v > hi ? hi : v);
+    };
+    auto rdBool = [&](const wchar_t* key, bool def) -> bool {
+        GetPrivateProfileStringW(L"typing", key, L"", buf, 128, path.c_str());
+        if (!buf[0]) return def;
+        return _wcsicmp(buf, L"1") == 0 || _wcsicmp(buf, L"true") == 0 ||
+               _wcsicmp(buf, L"yes") == 0 || _wcsicmp(buf, L"on") == 0;
+    };
+
+    g_typeOpts.intervalMs        = rdInt(L"interval", 8, 0, 1000);
+    g_typeOpts.batchChars        = rdInt(L"batch", 0, 0, 256);
+    g_typeOpts.forceEnglish      = rdBool(L"english", false);
+    g_typeOpts.restoreLayout     = rdBool(L"restore_layout", false);
+    g_typeOpts.checkUipi         = rdBool(L"check_uipi", true);
+
+    auto& hz = g_typeOpts.humanize;
+    hz.enabled               = rdBool(L"humanize", false);
+    hz.meanMs                = (double)rdInt(L"humanize_mean_ms", 45, 1, 2000);
+    hz.sigmaMs               = (double)rdInt(L"humanize_sigma_ms", 18, 0, 1000);
+    hz.minMs                 = rdInt(L"humanize_min_ms", 8, 0, 5000);
+    hz.maxMs                 = rdInt(L"humanize_max_ms", 400, 1, 10000);
+    hz.pauseAfterPunct       = rdBool(L"humanize_pause_punct", true);
+    hz.pauseAfterNewline     = rdBool(L"humanize_pause_newline", true);
+    hz.pauseAfterLongWord    = rdBool(L"humanize_pause_word", true);
+    hz.fatigue               = rdBool(L"humanize_fatigue", true);
+    hz.typoRate              = (double)rdInt(L"humanize_typo_percent", 0, 0, 5) / 100.0;
+    if (hz.maxMs < hz.minMs) hz.maxMs = hz.minMs;
 }
 
 static void SaveConfig()
@@ -805,6 +749,31 @@ static void SaveConfig()
     std::wstring stop  = HotkeyToString(g_hkStop);
     WritePrivateProfileStringW(L"hotkey", L"start", start.c_str(), path.c_str());
     WritePrivateProfileStringW(L"hotkey", L"stop",  stop.c_str(),  path.c_str());
+}
+
+// 用户显式改过高级选项时才落盘 [typing]，避免默认安装凭空多出配置段
+static void SaveTypingConfig(const at::TypingOptions& o)
+{
+    std::wstring path = ConfigPath();
+    wchar_t buf[64];
+
+    swprintf_s(buf, L"%d", o.batchChars);
+    WritePrivateProfileStringW(L"typing", L"batch", buf, path.c_str());
+
+    WritePrivateProfileStringW(L"typing", L"humanize",
+                              o.humanize.enabled ? L"1" : L"0", path.c_str());
+
+    swprintf_s(buf, L"%d", (int)(o.humanize.meanMs + 0.5));
+    WritePrivateProfileStringW(L"typing", L"humanize_mean_ms", buf, path.c_str());
+
+    swprintf_s(buf, L"%d", (int)(o.humanize.sigmaMs + 0.5));
+    WritePrivateProfileStringW(L"typing", L"humanize_sigma_ms", buf, path.c_str());
+
+    swprintf_s(buf, L"%d", (int)(o.humanize.typoRate * 100.0 + 0.5));
+    WritePrivateProfileStringW(L"typing", L"humanize_typo_percent", buf, path.c_str());
+
+    WritePrivateProfileStringW(L"typing", L"humanize_fatigue",
+                              o.humanize.fatigue ? L"1" : L"0", path.c_str());
 }
 
 static bool RegisterHotkeys(HWND hWnd)
@@ -948,15 +917,7 @@ static void SubclassEdit(HWND h)
 
 
 // ============================================================
-//  仓库图标绘制
-//  DrawIconEx 不做 alpha 混合，透明区会被画成实心方块；
-//  改用 ImageList(ILC_COLOR32) 才能得到正确的透明边缘。
-// ============================================================
-// 用 32 位 DIB 手工做 alpha 混合。
-// ImageList_Draw + ILD_TRANSPARENT 走的是掩码路径，对带 alpha 的 ICO
-// 会在四角留下实心方块；DrawIconEx 同样不做 alpha 混合。
-// ============================================================
-//  右下角仓库跳转按钮
+//  右下角版本标签（点击跳转仓库）
 // ============================================================
 static LRESULT CALLBACK VersionLabelProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp,
                                          UINT_PTR, DWORD_PTR)
@@ -1210,8 +1171,9 @@ static void ApplyDarkScrollbar(HWND h)
         (PFN_SetWindowTheme)GetProcAddress(uxtheme, "SetWindowTheme");
     if (!fn) return;
 
-    // Win10 1809+ 的深色滚动条主题；老系统上无效但不报错
-    fn(h, L"DarkMode_Explorer", nullptr);
+    // 深色用 DarkMode_Explorer（Win10 1809+）；浅色恢复系统默认 Explorer 主题
+    if (g_dark) fn(h, L"DarkMode_Explorer", nullptr);
+    else        fn(h, L"Explorer", nullptr);
 }
 
 // ============================================================
@@ -1442,9 +1404,17 @@ static void ApplySettings(HWND hDlg)
     g_hkStartOK = okStart;
     g_hkStopOK  = okStop;
 
+    // 拟人化开关（高级选项，默认关闭）
+    HWND chk = GetDlgItem(hDlg, IDC_CHK_HUMANIZE);
+    bool wantHumanize = chk && GetPropW(chk, L"AutoTyperChecked") != nullptr;
+    if (wantHumanize != g_typeOpts.humanize.enabled) {
+        g_typeOpts.humanize.enabled = wantHumanize;
+        SaveTypingConfig(g_typeOpts);
+    }
+
     SaveConfig();
     UpdateHotkeyLabels();
-    SetStatus(L"快捷键已更新并保存。");
+    SetStatus(L"设置已更新并保存。");
     DestroyWindow(hDlg);
     g_hSettings = nullptr;
 }
@@ -1482,33 +1452,42 @@ static LRESULT CALLBACK SettingsProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
             L"Backspace / Delete 清空 = 禁用；Esc 取消本次修改。\r\n"
             L"字母/数字/空格等字符键必须配修饰键，否则会挡住正常打字。",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            D(16), D(96), D(400), D(76), hWnd, (HMENU)IDC_SET_TIP, g_hInst, nullptr);
+            D(16), D(94), D(400), D(96), hWnd, (HMENU)IDC_SET_TIP, g_hInst, nullptr);
+
+        HWND chkHumanize = CreateWindowExW(0, L"BUTTON", L"拟人化节奏（逐字、带自然停顿）",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_AUTOCHECKBOX | WS_TABSTOP,
+            D(16), D(196), D(240), D(24), hWnd, (HMENU)IDC_CHK_HUMANIZE, g_hInst, nullptr);
 
         HWND btnDefault = CreateWindowExW(0, L"BUTTON", L"恢复默认",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-            D(16), D(186), D(100), D(32), hWnd, (HMENU)IDC_BTN_DEFAULT, g_hInst, nullptr);
+            D(16), D(232), D(100), D(32), hWnd, (HMENU)IDC_BTN_DEFAULT, g_hInst, nullptr);
 
         HWND btnOk = CreateWindowExW(0, L"BUTTON", L"确定",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_DEFPUSHBUTTON | WS_TABSTOP,
-            D(196), D(186), D(100), D(32), hWnd, (HMENU)IDOK, g_hInst, nullptr);
+            D(196), D(232), D(100), D(32), hWnd, (HMENU)IDOK, g_hInst, nullptr);
 
         HWND btnCancel = CreateWindowExW(0, L"BUTTON", L"取消",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-            D(304), D(186), D(100), D(32), hWnd, (HMENU)IDCANCEL, g_hInst, nullptr);
+            D(304), D(232), D(100), D(32), hWnd, (HMENU)IDCANCEL, g_hInst, nullptr);
 
         HFONT font = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_NORMAL,
                                  FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                  OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                  DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-        HWND all[] = { lblStart, g_hBoxStart, lblStop, g_hBoxStop, tip, btnDefault, btnOk, btnCancel };
+        HWND all[] = { lblStart, g_hBoxStart, lblStop, g_hBoxStop, tip,
+                       chkHumanize, btnDefault, btnOk, btnCancel };
         for (HWND h : all) SendMessageW(h, WM_SETFONT, (WPARAM)font, TRUE);
 
         SubclassEdit(g_hBoxStart);
         SubclassEdit(g_hBoxStop);
 
+        SubclassButton(chkHumanize, ROLE_CHECKBOX);
         SubclassButton(btnDefault, ROLE_NORMAL);
         SubclassButton(btnOk,      ROLE_PRIMARY);
         SubclassButton(btnCancel,  ROLE_NORMAL);
+
+        SetPropW(chkHumanize, L"AutoTyperChecked",
+                 g_typeOpts.humanize.enabled ? (HANDLE)1 : nullptr);
 
         SetWindowLongPtrW(g_hBoxStart, GWLP_USERDATA, 1);
         SetWindowLongPtrW(g_hBoxStop,  GWLP_USERDATA, 2);
@@ -1528,6 +1507,14 @@ static LRESULT CALLBACK SettingsProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_COMMAND: {
         int id = LOWORD(wp);
+        if (id == IDC_CHK_HUMANIZE && HIWORD(wp) == BN_CLICKED) {
+            // 与主界面复选框同一套状态语义：属性即真值源
+            HWND ctl = (HWND)lp;
+            SetPropW(ctl, L"AutoTyperChecked",
+                     GetPropW(ctl, L"AutoTyperChecked") ? nullptr : (HANDLE)1);
+            InvalidateRect(ctl, nullptr, TRUE);
+            return 0;
+        }
         if (id == IDOK)        { ApplySettings(hWnd); return 0; }
         if (id == IDCANCEL)    { DestroyWindow(hWnd); g_hSettings = nullptr; return 0; }
         if (id == IDC_BTN_DEFAULT && HIWORD(wp) == BN_CLICKED) {
@@ -1565,7 +1552,10 @@ static LRESULT CALLBACK SettingsProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
         LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lp;
         if (!dis || dis->CtlType != ODT_BUTTON) break;
         LONG_PTR roleRaw = GetWindowLongPtrW(dis->hwndItem, GWLP_USERDATA);
-        DrawOwnedButton(dis, (BtnRole)roleRaw);
+        // 和主窗口一致：复选框必须走 DrawOwnedCheckbox，
+        // 否则会被当普通按钮整块填充成白色横条
+        if ((BtnRole)roleRaw == ROLE_CHECKBOX) DrawOwnedCheckbox(dis);
+        else                                   DrawOwnedButton(dis, (BtnRole)roleRaw);
         return TRUE;
     }
 
@@ -1601,8 +1591,8 @@ static void ShowSettings(HWND owner)
     wc.lpszClassName = kSetClass;
     RegisterClassExW(&wc);
 
-    int w = S(432), h = S(272);
-    RECT orc, mrc;
+    int w = S(432), h = S(318);
+    RECT mrc;
     GetWindowRect(owner, &mrc);
     int x = mrc.left + (mrc.right - mrc.left - w) / 2;
     int y = mrc.top + (mrc.bottom - mrc.top - h) / 2;
@@ -1712,15 +1702,19 @@ static void StartWorkerNow()
     std::wstring text = std::move(g_pending);
     g_pending.clear();
 
-    int delay = GetSpeedMs();
-    bool en = IsChecked(g_hChkEnglish);
+    // 每次启动都从界面/配置重算，保证 GUI 改动立即生效
+    at::TypingOptions opts = g_typeOpts;
+    opts.intervalMs    = GetSpeedMs();
+    opts.forceEnglish  = IsChecked(g_hChkEnglish);
+    opts.restoreLayout = opts.forceEnglish;
 
     g_running = true;
     SetStatus(L"正在输入…（按 F10 或“停止”中止）");
 
-    g_worker = std::thread([text = std::move(text), delay, en]() {
-        DWORD blocked = TypingWorker(text, delay, en);
-        PostMessageW(g_hMain, WM_APP_DONE, (WPARAM)blocked, 0);
+    g_worker = std::thread([text = std::move(text), opts]() {
+        at::TypingReport rep = TypingWorker(text, opts);
+        PostMessageW(g_hMain, WM_APP_DONE, (WPARAM)rep.status,
+                     (LPARAM)rep.blockedEvents);
     });
 }
 
@@ -1755,6 +1749,77 @@ static void BeginTyping()
     ShowCountdownWindow();
     ShowWindow(g_hMain, SW_MINIMIZE);
     SetTimer(g_hMain, TIMER_COUNTDOWN, 1000, nullptr);
+}
+
+// 可选提权：只在注入失败后询问，绝不默认强制
+static bool OfferElevate(HWND owner)
+{
+    // 已经是管理员就不再骚扰
+    at::IntegrityInfo probe = at::ProbeForegroundIntegrity();
+    if (probe.self >= SECURITY_MANDATORY_HIGH_RID) {
+        SetStatus(L"已具备管理员权限，但仍被拦截（可能是安全桌面或受保护进程）。");
+        return false;
+    }
+
+    int r = MessageBoxW(owner,
+        L"键鼠注入被系统拦截。\n\n"
+        L"当前以普通权限运行，而目标窗口权限更高。\n"
+        L"是否以管理员身份重新启动 AutoTyper？",
+        L"需要更高权限", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+    if (r != IDYES) {
+        SetStatus(L"发送失败：请右键“以管理员身份运行”本程序。");
+        return false;
+    }
+
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+
+    SHELLEXECUTEINFOW sei;
+    ZeroMemory(&sei, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOASYNC;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe;
+    sei.nShow = SW_SHOWNORMAL;
+
+    if (!ShellExecuteExW(&sei)) {
+        if (GetLastError() == ERROR_CANCELLED) {
+            SetStatus(L"已取消提权。");
+        } else {
+            SetStatus(L"提权启动失败。");
+        }
+        return false;
+    }
+
+    g_stop = true;
+    DestroyWindow(owner);
+    return true;
+}
+
+// 用 AttachThreadInput 绕过前台锁：SetForegroundWindow 在非用户输入触发的
+// 场景下会被系统静默拒绝，导致注入打到别的窗口。selftest 必须自己保证前台。
+static bool ForceForegroundWindow(HWND hWnd)
+{
+    if (!hWnd) return false;
+    if (GetForegroundWindow() == hWnd) return true;
+
+    HWND fg = GetForegroundWindow();
+    DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    DWORD myThread = GetCurrentThreadId();
+
+    bool attached = false;
+    if (fgThread && fgThread != myThread)
+        attached = AttachThreadInput(myThread, fgThread, TRUE) != FALSE;
+
+    ShowWindow(hWnd, SW_SHOW);
+    BringWindowToTop(hWnd);
+    SetForegroundWindow(hWnd);
+    SetActiveWindow(hWnd);
+
+    if (attached)
+        AttachThreadInput(myThread, fgThread, FALSE);
+
+    return GetForegroundWindow() == hWnd;
 }
 
 static void RequestStop()
@@ -1945,7 +2010,7 @@ static void CreateControls(HWND hWnd)
 
     // 右下角仓库跳转按钮
     // 用 STATIC 承载：BUTTON 的 OWNERDRAW 会带系统底色，在毛玻璃上露出方块
-    g_hRepo = CreateWindowExW(0, L"STATIC", L"v1.0.0",
+    g_hRepo = CreateWindowExW(0, L"STATIC", L"v1.0.1",
         WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_NOTIFY,
         0, 0, 0, 0, hWnd, (HMENU)IDC_REPO, g_hInst, nullptr);
 
@@ -1989,7 +2054,7 @@ static void UpdateCharCount()
 static LRESULT CALLBACK MainProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
-    case WM_CREATE:
+    case WM_CREATE: {
         g_hMain = hWnd;
         LoadConfig();
         ApplyThemePalette();
@@ -1997,19 +2062,26 @@ static LRESULT CALLBACK MainProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
         Layout(hWnd);
         ApplyDarkTitleBar(hWnd, g_dark);
         ApplyWindowIcons(hWnd, g_dark);
-        // 毛玻璃默认开启；不支持的系统自动降级为纯色
+        // 毛玻璃为深色主题默认；浅色主题走纯色（见 EnableAcrylic 注释）
         EnableAcrylic(hWnd, true);
-        if (!g_acrylicSupported) {
+        // 仅"系统不支持"才提示；浅色主题主动用纯色，不算降级
+        if (!g_acrylicSupported && !g_acrylicThemeOff) {
             SetStatus(L"当前系统不支持毛玻璃，已回退为纯色背景。");
         }
         RegisterHotkeys(hWnd);
         if (!g_hkStartOK && g_hkStart.vk != 0) {
             SetStatus(L"警告：“开始”热键被占用，请点“快捷键…”更换。");
         }
+        // 启动即做一次权限预检：仅在注意到目标更高时提示，不阻塞使用
+        at::IntegrityInfo ii = at::ProbeForegroundIntegrity();
+        if (ii.targetHigher && g_hkStartOK) {
+            SetStatus(L"提示：目标窗口权限更高，发送前请以管理员身份运行本程序。");
+        }
         if (g_selftest) {
             SetTimer(hWnd, TIMER_SELFTEST, 700, nullptr);
         }
         return 0;
+    }
 
     case WM_SIZE:
         if (g_hEdit) {
@@ -2114,11 +2186,17 @@ static LRESULT CALLBACK MainProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hWnd, TIMER_SELFTEST);
             // 自测：向自己的编辑框注入一段文本
             ShowWindow(hWnd, SW_SHOW);
-            SetForegroundWindow(hWnd);
+            if (!ForceForegroundWindow(hWnd)) {
+                // 拿不到前台就明确失败，避免把"注入打到别的窗口"误判成编码问题
+                SetStatus(L"自测无法取得前台焦点，结果不可信。");
+            }
             SetFocus(g_hEdit);
             g_testExpected = L"Hello 世界 123\r\n第二行 😀 end";
             std::wstring payload = g_testExpected;
-            TypingWorker(payload, 4, false);
+            at::TypingOptions opts;      // selftest 固定用默认参数，不受用户配置影响
+            opts.intervalMs = 4;
+            opts.checkUipi = false;      // 目标是自身窗口，无需预检
+            TypingWorker(payload, opts);
             SetTimer(hWnd, TIMER_SELFTEST2, 900, nullptr);
             return 0;
         }
@@ -2160,14 +2238,19 @@ static LRESULT CALLBACK MainProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_DONE:
         JoinWorker();
         g_running = false;
-        if (wp) {
-            SetStatus(L"发送失败：目标窗口权限更高，请右键“以管理员身份运行”本程序。");
-            MessageBoxW(hWnd, L"键鼠注入被系统拦截。\n\n若目标是管理员权限窗口，请以管理员身份重新运行 AutoTyper。",
-                        L"发送失败", MB_ICONWARNING);
-        } else if (g_stop.load()) {
-            SetStatus(L"已停止。");
-        } else {
-            SetStatus(L"输入完成。");
+        {
+            at::TypingStatus st = (at::TypingStatus)wp;
+            if (st == at::TypingStatus::Blocked) {
+                SetStatus(L"发送失败：目标窗口权限更高，请以管理员身份重新运行。");
+                if (OfferElevate(hWnd)) return 0;
+            } else if (st == at::TypingStatus::TargetHigherIL) {
+                SetStatus(L"目标窗口权限更高，注入可能被拦截；可尝试以管理员身份运行。");
+                if (OfferElevate(hWnd)) return 0;
+            } else if (g_stop.load()) {
+                SetStatus(L"已停止。");
+            } else {
+                SetStatus(L"输入完成。");
+            }
         }
         MessageBeep(MB_OK);
         if (g_restoreAfter) {
@@ -2254,24 +2337,7 @@ static int RunGui(int nCmdShow)
 // ============================================================
 //  无界面模式（命令行）
 // ============================================================
-static std::wstring Unescape(const std::wstring& s)
-{
-    std::wstring out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == L'\\' && i + 1 < s.size()) {
-            wchar_t n = s[++i];
-            if (n == L'n') out.push_back(L'\n');
-            else if (n == L'r') out.push_back(L'\r');
-            else if (n == L't') out.push_back(L'\t');
-            else if (n == L'\\') out.push_back(L'\\');
-            else { out.push_back(L'\\'); out.push_back(n); }
-        } else {
-            out.push_back(s[i]);
-        }
-    }
-    return out;
-}
+using at::Unescape;
 
 static void ConsolePrint(const wchar_t* text)
 {
@@ -2285,24 +2351,46 @@ static void ConsolePrint(const wchar_t* text)
     FreeConsole();
 }
 
-static int RunHeadless(const std::wstring& text, int delaySec, int intervalMs, bool forceEnglish)
+static int RunHeadless(const std::wstring& text, int delaySec, int intervalMs,
+                       bool forceEnglish, bool humanize)
 {
     if (delaySec > 0) {
-        wchar_t buf[128];
-        swprintf_s(buf, L"[AutoTyper] %d 秒后开始输入 %zu 个字符，请切换到目标窗口…",
-                   delaySec, text.size());
+        wchar_t buf[160];
+        swprintf_s(buf,
+            L"[AutoTyper] %d 秒后开始输入 %zu 个字符，请切换到目标窗口…",
+            delaySec, at::CountCodePoints(text));
         ConsolePrint(buf);
         Sleep((DWORD)delaySec * 1000);
     }
 
-    DWORD blocked = TypingWorker(text, intervalMs, forceEnglish);
+    // 命令行以参数为准，其余高级项沿用 ini
+    at::TypingOptions opts = g_typeOpts;
+    opts.intervalMs    = intervalMs;
+    opts.forceEnglish  = forceEnglish;
+    opts.restoreLayout = forceEnglish;
+    if (humanize) opts.humanize.enabled = true;
+
+    at::TypingReport rep = TypingWorker(text, opts);
     MessageBeep(MB_OK);
 
-    if (blocked) {
+    switch (rep.status) {
+    case at::TypingStatus::Blocked:
         ConsolePrint(L"[AutoTyper] 注入被拦截，请以管理员身份运行。");
         return 2;
+    case at::TypingStatus::TargetHigherIL:
+        ConsolePrint(L"[AutoTyper] 目标窗口权限更高，注入可能被拦截；请以管理员身份运行。");
+        return 3;
+    case at::TypingStatus::Empty:
+        ConsolePrint(L"[AutoTyper] 文本为空。");
+        return 1;
+    default:
+        break;
     }
-    ConsolePrint(L"[AutoTyper] 完成。");
+
+    wchar_t done[160];
+    swprintf_s(done, L"[AutoTyper] 完成：%d 个字符，%d 批。",
+               rep.totalCodePoints, rep.batches);
+    ConsolePrint(done);
     return 0;
 }
 
@@ -2325,6 +2413,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
     int intervalMs = 8;
     bool forceEnglish = false;
     bool wantGui = false;
+    bool humanize = false;
+    int  batchChars = -1;      // -1 = 未指定，沿用 ini
+    bool intervalSpecified = false;   // 未传 -i 时允许 ini 的 [typing] interval 生效
 
     for (int i = 1; i < argc; ++i) {
         std::wstring a = argv[i];
@@ -2344,11 +2435,19 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
             if (next(v)) delaySec = (int)wcstol(v.c_str(), nullptr, 10);
         } else if (a == L"-i" || a == L"--interval") {
             std::wstring v;
-            if (next(v)) intervalMs = (int)wcstol(v.c_str(), nullptr, 10);
+            if (next(v)) {
+                intervalMs = (int)wcstol(v.c_str(), nullptr, 10);
+                intervalSpecified = true;
+            }
         } else if (a == L"--no-english") {
             forceEnglish = false;
         } else if (a == L"--english") {
             forceEnglish = true;
+        } else if (a == L"--humanize") {
+            humanize = true;
+        } else if (a == L"--batch") {
+            std::wstring v;
+            if (next(v)) batchChars = (int)wcstol(v.c_str(), nullptr, 10);
         } else if (a == L"--selftest") {
             g_selftest = true;
         } else if (a == L"--gui" || a == L"-g") {
@@ -2363,7 +2462,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
                 L"参数：\r\n"
                 L"  -d  倒计时秒数（默认 3，0 立即开始）\r\n"
                 L"  -i  每字符间隔毫秒（默认 8，0 最快）\r\n"
-                L"  --english / --no-english  是否在发送前切换英文键盘布局（默认不切）\r\n");
+                L"  --batch N  每批注入字符数（0=自动，默认沿用 ini）\r\n"
+                L"  --english / --no-english  是否在发送前切换英文键盘布局（默认不切）\r\n"
+                L"  --humanize  启用拟人化节奏（默认关闭）\r\n");
             LocalFree(argv);
             return 0;
         }
@@ -2382,6 +2483,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
     }
 
     if (hasText && !wantGui) {
+        // 命令行模式也要读 ini 里的高级项（[typing] 段），但显式参数优先级更高
+        LoadConfig();
+        if (batchChars >= 0) {
+            if (batchChars > 256) batchChars = 256;
+            g_typeOpts.batchChars = batchChars;
+        }
+        if (!intervalSpecified) intervalMs = g_typeOpts.intervalMs;
+
         std::wstring text = inlineText;
         if (!filePath.empty()) {
             if (!ReadTextFile(filePath, text)) {
@@ -2393,7 +2502,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow)
             ConsolePrint(L"[AutoTyper] 文本为空。");
             return 1;
         }
-        return RunHeadless(text, delaySec, intervalMs, forceEnglish);
+        return RunHeadless(text, delaySec, intervalMs, forceEnglish, humanize);
     }
 
     return RunGui(nCmdShow);

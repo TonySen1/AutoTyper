@@ -16,24 +16,43 @@ if errorlevel 1 (
 if not exist "%DIST%" mkdir "%DIST%"
 if not exist "%OBJ%" mkdir "%OBJ%"
 
-echo [1/5] resources
+set "CFLAGS=/nologo /c /utf-8 /EHsc /O2 /GS /guard:cf /W3 /DNDEBUG /DUNICODE /D_UNICODE"
+
+echo [1/7] resources
 rc /nologo /fo "%OBJ%\app.res" /I "%SRC%" "%SRC%\app.rc"
 if errorlevel 1 exit /b 1
 
-echo [2/5] compile
-cl /nologo /c /utf-8 /EHsc /O2 /GS /guard:cf /W3 /DNDEBUG /DUNICODE /D_UNICODE /Fo"%OBJ%\main.obj" "%SRC%\main.cpp"
+echo [2/7] textfmt
+cl %CFLAGS% /Fo"%OBJ%\textfmt.obj" "%SRC%\textfmt.cpp"
 if errorlevel 1 exit /b 1
 
-echo [3/5] link
-link /nologo /OUT:"%DIST%\AutoTyper.exe" /SUBSYSTEM:WINDOWS /MACHINE:X64 /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /MANIFEST:NO "%OBJ%\main.obj" "%OBJ%\app.res" user32.lib gdi32.lib msimg32.lib comdlg32.lib comctl32.lib shell32.lib advapi32.lib
+echo [3/7] typing
+cl %CFLAGS% /Fo"%OBJ%\typing.obj" "%SRC%\typing.cpp"
 if errorlevel 1 exit /b 1
 
-echo [4/5] test host
+echo [4/7] compile
+cl %CFLAGS% /Fo"%OBJ%\main.obj" "%SRC%\main.cpp"
+if errorlevel 1 exit /b 1
+
+echo [5/7] link
+link /nologo /OUT:"%DIST%\AutoTyper.exe" /SUBSYSTEM:WINDOWS /MACHINE:X64 /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /MANIFEST:NO ^
+  "%OBJ%\main.obj" "%OBJ%\typing.obj" "%OBJ%\textfmt.obj" "%OBJ%\app.res" ^
+  user32.lib gdi32.lib msimg32.lib comdlg32.lib comctl32.lib shell32.lib advapi32.lib winmm.lib
+if errorlevel 1 exit /b 1
+
+echo [6/7] test host
 cl /nologo /c /utf-8 /EHsc /O2 /DUNICODE /D_UNICODE /Fo"%OBJ%\testhost.obj" "%ROOT%test\testhost.cpp"
 if errorlevel 1 exit /b 1
 link /nologo /OUT:"%OBJ%\testhost.exe" /SUBSYSTEM:WINDOWS /MACHINE:X64 /MANIFEST:NO "%OBJ%\testhost.obj" user32.lib gdi32.lib
 if errorlevel 1 exit /b 1
 
-echo [5/5] done
+echo [7/7] unit tests
+cl %CFLAGS% /Fo"%OBJ%\typing_test.obj" "%ROOT%test\typing_test.cpp"
+if errorlevel 1 exit /b 1
+link /nologo /OUT:"%OBJ%\typing_test.exe" /SUBSYSTEM:CONSOLE /MACHINE:X64 /MANIFEST:NO ^
+  "%OBJ%\typing_test.obj" "%OBJ%\typing.obj" "%OBJ%\textfmt.obj" user32.lib advapi32.lib winmm.lib
+if errorlevel 1 exit /b 1
+
+echo [done]
 for %%F in ("%DIST%\AutoTyper.exe") do echo   output: %%F  %%~zF bytes
 exit /b 0
