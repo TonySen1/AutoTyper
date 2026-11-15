@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <!--
+    AutoTyper · 自动逐字键入
+
+    与 ClipForge 的 logo-3d 同一套渲染语言：深蓝黑圆角底、冷青蓝→暖紫的色温、
+    显式侧壁做出的挤出厚度、封面斜向受光、倒角用一明一暗两道描边。
+
+    图形取“一键一键敲出去”：
+      · 主体是一枚厚键帽 —— 顶面比底面小一圈，四条斜边把上下连起来，这样才有体积。
+        上一版把顶面和底面画成同样大小，结果像一张卡片。
+      · 键帽顶面的第一行被拆成字符格，最后一格是还没落下的光标；
+        其余两行灰着，表示还没敲到。
+      · 右上三颗字符块正从键帽飞离，尺寸递减、颜色由青转紫 —— 这就是“逐字”。
+  -->
+  <defs>
+    <linearGradient id="bg" x1="72" y1="24" x2="440" y2="496" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1B2B45"/>
+      <stop offset="0.52" stop-color="#0A101B"/>
+      <stop offset="1" stop-color="#04060A"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse"
+                    gradientTransform="translate(252 250) rotate(90) scale(250)">
+      <stop offset="0" stop-color="#4F9CFF" stop-opacity="0.18"/>
+      <stop offset="0.55" stop-color="#8B5CF6" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="top" x1="120" y1="196" x2="320" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9DEAFF"/>
+      <stop offset="0.38" stop-color="#3C88EE"/>
+      <stop offset="1" stop-color="#1B3D9C"/>
+    </linearGradient>
+
+    <!-- 键帽四条斜边用同一族渐变，方向上深下浅，体积才立得住 -->
+    <linearGradient id="skirt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4E86D2"/>
+      <stop offset="0.30" stop-color="#1E3D6E"/>
+      <stop offset="1" stop-color="#0A1424"/>
+    </linearGradient>
+
+    <linearGradient id="sheen" x1="118" y1="204" x2="292" y2="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.44"/>
+      <stop offset="0.40" stop-color="#FFFFFF" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="chip1" x1="352" y1="268" x2="400" y2="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8FE4FF"/>
+      <stop offset="1" stop-color="#5FB8FF"/>
+    </linearGradient>
+    <linearGradient id="chip2" x1="392" y1="214" x2="436" y2="170" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9A8CFF"/>
+      <stop offset="1" stop-color="#A05FF5"/>
+    </linearGradient>
+    <linearGradient id="chip3" x1="424" y1="164" x2="460" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E79BFF"/>
+      <stop offset="1" stop-color="#FFC0F4"/>
+    </linearGradient>
+
+    <clipPath id="topClip">
+      <path d="M142 196 H290 A34 34 0 0 1 324 230 V318 A34 34 0 0 1 290 352
+               H142 A34 34 0 0 1 108 318 V230 A34 34 0 0 1 142 196 Z"/>
+    </clipPath>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g transform="translate(0 0)">
+  <rect width="512" height="512" rx="112" fill="url(#halo)"/>
+  <rect x="2" y="2" width="508" height="508" rx="110" fill="none"
+        stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="2"/>
+
+  <!-- 键帽落地阴影 -->
+  <path d="M146 172 H294 A38 38 0 0 1 332 210 V330 A38 38 0 0 1 294 368
+           H146 A38 38 0 0 1 108 330 V210 A38 38 0 0 1 146 172 Z"
+        fill="#000000" opacity="0.38" transform="translate(7 18)"/>
+
+  <!-- 侧壁：底边 + 右侧边，厚度 22。左上受光，墙只留在这两条边 -->
+  <path d="M332 210 V368 H146 L146 394 H294 A38 38 0 0 0 332 356 Z" fill="url(#skirt)"/>
+
+  <g clip-path="url(#topClip)">
+    <rect x="108" y="172" width="224" height="196" fill="url(#top)"/>
+    <rect x="108" y="172" width="224" height="196" fill="url(#sheen)"/>
+
+    <path d="M148 175 H292" stroke="#FFFFFF" stroke-opacity="0.68"
+          stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M111 224 V322" stroke="#FFFFFF" stroke-opacity="0.24"
+          stroke-width="3" stroke-linecap="round"/>
+    <path d="M150 365 H290" stroke="#04070E" stroke-opacity="0.5"
+          stroke-width="3" stroke-linecap="round"/>
+    <path d="M329 224 V322" stroke="#04070E" stroke-opacity="0.38"
+          stroke-width="3" stroke-linecap="round"/>
+
+    <!-- 第一行：四个字符格 + 一个还在闪的光标 -->
+    <g fill="#03101E" opacity="0.6">
+      <rect x="132" y="208" width="34" height="26" rx="9"/>
+      <rect x="172" y="208" width="34" height="26" rx="9"/>
+      <rect x="212" y="208" width="34" height="26" rx="9"/>
+      <rect x="252" y="208" width="34" height="26" rx="9"/>
+    </g>
+    <rect x="294" y="206" width="14" height="30" rx="6" fill="#FFFFFF" opacity="0.92"/>
+
+    <!-- 后两行：还没敲到 -->
+    <g fill="#03101E" opacity="0.32">
+      <rect x="132" y="272" width="140" height="21" rx="10.5"/>
+      <rect x="132" y="314" width="94" height="21" rx="10.5"/>
+    </g>
+  </g>
+
+  <!-- 飞出的字符块 -->
+  <g>
+    <rect x="352" y="240" width="42" height="42" rx="13" fill="url(#chip1)"
+          transform="rotate(-12 373 261)"/>
+    <rect x="356" y="244" width="34" height="9" rx="4" fill="#FFFFFF" opacity="0.30"
+          transform="rotate(-12 373 261)"/>
+
+    <rect x="394" y="190" width="32" height="32" rx="11" fill="url(#chip2)"
+          transform="rotate(-12 410 206)"/>
+    <rect x="397" y="193" width="26" height="7" rx="3" fill="#FFFFFF" opacity="0.26"
+          transform="rotate(-12 410 206)"/>
+
+    <rect x="428" y="150" width="23" height="23" rx="9" fill="url(#chip3)"
+          transform="rotate(-12 439 161)"/>
+    <rect x="430" y="152" width="19" height="5" rx="2.5" fill="#FFFFFF" opacity="0.3"
+          transform="rotate(-12 439 161)"/>
+  </g>
+
+  <!-- 轨迹：只描边 -->
+  <path d="M330 330 C 366 306 396 268 420 226 C 438 194 448 170 452 152"
+        stroke="#A6E8FF" stroke-width="2" stroke-opacity="0.18"
+        stroke-linecap="round" stroke-dasharray="3 9"/>
+
+  <circle cx="284" cy="233" r="3" fill="#FFFFFF" opacity="0.9"/>
+  <circle cx="284" cy="233" r="8.5" fill="#A6F3FF" opacity="0.16"/>
+  </g>
+</svg>
