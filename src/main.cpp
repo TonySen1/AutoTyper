@@ -2010,7 +2010,7 @@ static void CreateControls(HWND hWnd)
 
     // 右下角仓库跳转按钮
     // 用 STATIC 承载：BUTTON 的 OWNERDRAW 会带系统底色，在毛玻璃上露出方块
-    g_hRepo = CreateWindowExW(0, L"STATIC", L"v1.0.1",
+    g_hRepo = CreateWindowExW(0, L"STATIC", L"v1.0.2",
         WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_NOTIFY,
         0, 0, 0, 0, hWnd, (HMENU)IDC_REPO, g_hInst, nullptr);
 
