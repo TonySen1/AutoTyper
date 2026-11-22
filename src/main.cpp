@@ -150,6 +150,12 @@ using at::ReadTextFile;
 // ============================================================
 static at::TypingOptions g_typeOpts;
 
+// GUI 参数的持久化值（created 时套用到控件，改动时落盘）
+static int  g_uiIntervalMs   = 8;
+static int  g_uiCountdownSec = 3;
+static bool g_uiEnglish      = true;
+static bool g_uiRestoreAfter = true;
+
 static at::TypingReport TypingWorker(const std::wstring& text,
                                      const at::TypingOptions& opts)
 {
@@ -709,36 +715,42 @@ static void LoadConfig()
     if (ParseHotkey(buf, hk)) g_hkStop = hk;
 
     // [typing] 段：全部可选，缺省即 v1.0.0 行为
-    auto rdInt = [&](const wchar_t* key, int def, int lo, int hi) -> int {
-        GetPrivateProfileStringW(L"typing", key, L"", buf, 128, path.c_str());
+    auto rdInt = [&](const wchar_t* sec, const wchar_t* key, int def, int lo, int hi) -> int {
+        GetPrivateProfileStringW(sec, key, L"", buf, 128, path.c_str());
         if (!buf[0]) return def;
         int v = (int)wcstol(buf, nullptr, 10);
         return v < lo ? lo : (v > hi ? hi : v);
     };
-    auto rdBool = [&](const wchar_t* key, bool def) -> bool {
-        GetPrivateProfileStringW(L"typing", key, L"", buf, 128, path.c_str());
+    auto rdBool = [&](const wchar_t* sec, const wchar_t* key, bool def) -> bool {
+        GetPrivateProfileStringW(sec, key, L"", buf, 128, path.c_str());
         if (!buf[0]) return def;
         return _wcsicmp(buf, L"1") == 0 || _wcsicmp(buf, L"true") == 0 ||
                _wcsicmp(buf, L"yes") == 0 || _wcsicmp(buf, L"on") == 0;
     };
 
-    g_typeOpts.intervalMs        = rdInt(L"interval", 8, 0, 1000);
-    g_typeOpts.batchChars        = rdInt(L"batch", 0, 0, 256);
-    g_typeOpts.forceEnglish      = rdBool(L"english", false);
-    g_typeOpts.restoreLayout     = rdBool(L"restore_layout", false);
-    g_typeOpts.checkUipi         = rdBool(L"check_uipi", true);
+    g_typeOpts.intervalMs        = rdInt(L"typing", L"interval", 8, 0, 1000);
+    g_typeOpts.batchChars        = rdInt(L"typing", L"batch", 0, 0, 256);
+    g_typeOpts.forceEnglish      = rdBool(L"typing", L"english", false);
+    g_typeOpts.restoreLayout     = rdBool(L"typing", L"restore_layout", false);
+    g_typeOpts.checkUipi         = rdBool(L"typing", L"check_uipi", true);
+
+    // GUI 记忆项：[gui] 段，缺省与控件初值一致
+    g_uiIntervalMs   = rdInt(L"gui", L"interval", 8, 0, 1000);
+    g_uiCountdownSec = rdInt(L"gui", L"countdown", 3, 0, 30);
+    g_uiEnglish      = rdBool(L"gui", L"english_layout", true);
+    g_uiRestoreAfter = rdBool(L"gui", L"notify_done", true);
 
     auto& hz = g_typeOpts.humanize;
-    hz.enabled               = rdBool(L"humanize", false);
-    hz.meanMs                = (double)rdInt(L"humanize_mean_ms", 45, 1, 2000);
-    hz.sigmaMs               = (double)rdInt(L"humanize_sigma_ms", 18, 0, 1000);
-    hz.minMs                 = rdInt(L"humanize_min_ms", 8, 0, 5000);
-    hz.maxMs                 = rdInt(L"humanize_max_ms", 400, 1, 10000);
-    hz.pauseAfterPunct       = rdBool(L"humanize_pause_punct", true);
-    hz.pauseAfterNewline     = rdBool(L"humanize_pause_newline", true);
-    hz.pauseAfterLongWord    = rdBool(L"humanize_pause_word", true);
-    hz.fatigue               = rdBool(L"humanize_fatigue", true);
-    hz.typoRate              = (double)rdInt(L"humanize_typo_percent", 0, 0, 5) / 100.0;
+    hz.enabled               = rdBool(L"typing", L"humanize", false);
+    hz.meanMs                = (double)rdInt(L"typing", L"humanize_mean_ms", 45, 1, 2000);
+    hz.sigmaMs               = (double)rdInt(L"typing", L"humanize_sigma_ms", 18, 0, 1000);
+    hz.minMs                 = rdInt(L"typing", L"humanize_min_ms", 8, 0, 5000);
+    hz.maxMs                 = rdInt(L"typing", L"humanize_max_ms", 400, 1, 10000);
+    hz.pauseAfterPunct       = rdBool(L"typing", L"humanize_pause_punct", true);
+    hz.pauseAfterNewline     = rdBool(L"typing", L"humanize_pause_newline", true);
+    hz.pauseAfterLongWord    = rdBool(L"typing", L"humanize_pause_word", true);
+    hz.fatigue               = rdBool(L"typing", L"humanize_fatigue", true);
+    hz.typoRate              = (double)rdInt(L"typing", L"humanize_typo_percent", 0, 0, 5) / 100.0;
     if (hz.maxMs < hz.minMs) hz.maxMs = hz.minMs;
 }
 
@@ -749,6 +761,29 @@ static void SaveConfig()
     std::wstring stop  = HotkeyToString(g_hkStop);
     WritePrivateProfileStringW(L"hotkey", L"start", start.c_str(), path.c_str());
     WritePrivateProfileStringW(L"hotkey", L"stop",  stop.c_str(),  path.c_str());
+}
+
+// 保存主界面上的参数（倒计时 / 间隔 / 两个复选），[gui] 段
+static void SaveGuiConfig()
+{
+    std::wstring path = ConfigPath();
+    wchar_t buf[64];
+
+    if (g_hCd) g_uiCountdownSec = GetCountdownSec();
+    if (g_hChkEnglish) g_uiEnglish = IsChecked(g_hChkEnglish);
+    if (g_hChkRestore) g_uiRestoreAfter = IsChecked(g_hChkRestore);
+
+    swprintf_s(buf, L"%d", g_uiCountdownSec);
+    WritePrivateProfileStringW(L"gui", L"countdown", buf, path.c_str());
+    WritePrivateProfileStringW(L"gui", L"english_layout",
+                              g_uiEnglish ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"gui", L"notify_done",
+                              g_uiRestoreAfter ? L"1" : L"0", path.c_str());
+
+    if (g_hSpeed) {
+        swprintf_s(buf, L"%d", GetSpeedMs());
+        WritePrivateProfileStringW(L"gui", L"interval", buf, path.c_str());
+    }
 }
 
 // 用户显式改过高级选项时才落盘 [typing]，避免默认安装凭空多出配置段
@@ -877,6 +912,14 @@ static LRESULT CALLBACK EditBorderProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp
 
     if (msg == WM_NCPAINT)
         return 0;   // 不画直角边框
+
+    // 多行 EDIT 不实现 Ctrl+A —— 系统只在单行编辑框里内建全选
+    if (msg == WM_KEYDOWN && (UINT)wp == 'A') {
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+            SendMessageW(hWnd, EM_SETSEL, 0, (LPARAM)-1);
+            return 0;
+        }
+    }
 
     if (msg == WM_PAINT) {
         LRESULT r = DefSubclassProc(hWnd, msg, wp, lp);
@@ -1972,25 +2015,33 @@ static void CreateControls(HWND hWnd)
 
     g_hSpeedLbl = CreateWindowExW(0, L"STATIC", L"间隔(ms)",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hWnd, (HMENU)IDC_SPEED_LBL, g_hInst, nullptr);
-    g_hSpeed = CreateWindowExW(0, L"EDIT", L"8",
-        WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER | WS_TABSTOP,
-        0, 0, 0, 0, hWnd, (HMENU)IDC_SPEED, g_hInst, nullptr);
+    {
+        wchar_t speedTxt[16];
+        swprintf_s(speedTxt, L"%d", g_uiIntervalMs);
+        g_hSpeed = CreateWindowExW(0, L"EDIT", speedTxt,
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER | WS_TABSTOP,
+            0, 0, 0, 0, hWnd, (HMENU)IDC_SPEED, g_hInst, nullptr);
+    }
 
     g_hCdLbl = CreateWindowExW(0, L"STATIC", L"倒计时(s)",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hWnd, (HMENU)IDC_CD_LBL, g_hInst, nullptr);
-    g_hCd = CreateWindowExW(0, L"EDIT", L"3",
-        WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER | WS_TABSTOP,
-        0, 0, 0, 0, hWnd, (HMENU)IDC_CD, g_hInst, nullptr);
+    {
+        wchar_t cdTxt[16];
+        swprintf_s(cdTxt, L"%d", g_uiCountdownSec);
+        g_hCd = CreateWindowExW(0, L"EDIT", cdTxt,
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER | WS_TABSTOP,
+            0, 0, 0, 0, hWnd, (HMENU)IDC_CD, g_hInst, nullptr);
+    }
 
     g_hChkEnglish = CreateWindowExW(0, L"BUTTON", L"切换英文布局",
         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_AUTOCHECKBOX | WS_TABSTOP,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CHK_ENGLISH, g_hInst, nullptr);
-    SetChecked(g_hChkEnglish, true);
+    SetChecked(g_hChkEnglish, g_uiEnglish);
 
     g_hChkRestore = CreateWindowExW(0, L"BUTTON", L"完成后恢复",
         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_AUTOCHECKBOX | WS_TABSTOP,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CHK_RESTORE, g_hInst, nullptr);
-    SetChecked(g_hChkRestore, true);
+    SetChecked(g_hChkRestore, g_uiRestoreAfter);
 
     g_hBtnLoad = CreateWindowExW(0, L"BUTTON", L"载入文件…",
         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
@@ -2010,7 +2061,7 @@ static void CreateControls(HWND hWnd)
 
     // 右下角仓库跳转按钮
     // 用 STATIC 承载：BUTTON 的 OWNERDRAW 会带系统底色，在毛玻璃上露出方块
-    g_hRepo = CreateWindowExW(0, L"STATIC", L"v1.0.2",
+    g_hRepo = CreateWindowExW(0, L"STATIC", L"v1.1.0",
         WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_NOTIFY,
         0, 0, 0, 0, hWnd, (HMENU)IDC_REPO, g_hInst, nullptr);
 
@@ -2155,8 +2206,27 @@ static LRESULT CALLBACK MainProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
 
-        if (id == IDC_CHK_ENGLISH && code == BN_CLICKED) { ToggleChecked(g_hChkEnglish); return 0; }
-        if (id == IDC_CHK_RESTORE && code == BN_CLICKED) { ToggleChecked(g_hChkRestore); return 0; }
+        if (id == IDC_CHK_ENGLISH && code == BN_CLICKED) {
+            ToggleChecked(g_hChkEnglish);
+            SaveGuiConfig();
+            return 0;
+        }
+        if (id == IDC_CHK_RESTORE && code == BN_CLICKED) {
+            ToggleChecked(g_hChkRestore);
+            SaveGuiConfig();
+            return 0;
+        }
+
+        // 间隔 / 倒计时：失焦时才落盘，避免每敲一个数字就写一次 ini
+        if ((id == IDC_SPEED || id == IDC_CD) && code == EN_KILLFOCUS) {
+            // 先把空值/越界规范化成实际生效值
+            HWND ctl = (HWND)lp;
+            wchar_t b[16];
+            swprintf_s(b, L"%d", id == IDC_SPEED ? GetSpeedMs() : GetCountdownSec());
+            if (ReadEdit(ctl) != b) SetWindowTextW(ctl, b);
+            SaveGuiConfig();
+            return 0;
+        }
 
         if (id == IDC_EDIT && code == EN_CHANGE) { UpdateCharCount(); return 0; }
         return 0;
@@ -2254,9 +2324,15 @@ static LRESULT CALLBACK MainProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         MessageBeep(MB_OK);
         if (g_restoreAfter) {
-            ShowWindow(hWnd, SW_SHOWNOACTIVATE);
-            SetWindowPos(hWnd, HWND_TOP, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            // 完成后不返回主窗口：保持最小化，只在任务栏闪烁提示，不抢目标窗口焦点
+            FLASHWINFO fwi;
+            ZeroMemory(&fwi, sizeof(fwi));
+            fwi.cbSize    = sizeof(fwi);
+            fwi.hwnd      = hWnd;
+            fwi.dwFlags   = FLASHW_TRAY | FLASHW_TIMERNOFG;
+            fwi.uCount    = 3;
+            fwi.dwTimeout = 0;
+            FlashWindowEx(&fwi);
         }
         return 0;
 
